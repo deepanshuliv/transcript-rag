@@ -1,0 +1,13 @@
+.venv/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.ses
+
+data/chroma/*
+data/indexes/*
+data/parsed/*
+!data/chroma/.gitkeep
+!data/indexes/.gitkeep
+!data/parsed/.gitkeep
