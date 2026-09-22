@@ -88,11 +88,13 @@ class LocalIndex:
         manifest: IndexManifest,
         bm25: BM25Index,
         vector_store: ChromaVectorStore,
+        embedder: EmbeddingModel,
     ) -> None:
         self.chunks = chunks
         self.manifest = manifest
         self.bm25 = bm25
         self.vector_store = vector_store
+        self.embedder = embedder
         self._chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
 
     def get_chunk(self, evidence_id: str) -> TranscriptChunk | None:
@@ -161,6 +163,7 @@ class LocalIndex:
             manifest=manifest,
             bm25=bm25,
             vector_store=vector_store,
+            embedder=embedding_model,
         )
 
     @classmethod
@@ -169,6 +172,7 @@ class LocalIndex:
         *,
         data_dir: str | Path = DATA_DIR,
         collection_name: str | None = None,
+        embedder: EmbeddingModel | None = None,
     ) -> "LocalIndex":
         """Reload all Phase 2 artifacts without reparsing or embedding."""
 
@@ -208,11 +212,21 @@ class LocalIndex:
         if vector_store.count != manifest.chunk_count:
             raise ValueError("Chroma count does not match the index manifest")
 
+        embedding_model = embedder or SentenceTransformerEmbedder(
+            model_name=manifest.embedding_model,
+            dimension=manifest.embedding_dimension,
+        )
+        if embedding_model.model_name != manifest.embedding_model:
+            raise ValueError("Embedding model does not match the index manifest")
+        if embedding_model.dimension != manifest.embedding_dimension:
+            raise ValueError("Embedding dimension does not match the index manifest")
+
         return cls(
             chunks=chunks,
             manifest=manifest,
             bm25=bm25,
             vector_store=vector_store,
+            embedder=embedding_model,
         )
 
 
@@ -237,7 +251,12 @@ def load_index(
     *,
     data_dir: str | Path = DATA_DIR,
     collection_name: str | None = None,
+    embedder: EmbeddingModel | None = None,
 ) -> LocalIndex:
     """Convenience wrapper for restarting from persisted Phase 2 artifacts."""
 
-    return LocalIndex.load(data_dir=data_dir, collection_name=collection_name)
+    return LocalIndex.load(
+        data_dir=data_dir,
+        collection_name=collection_name,
+        embedder=embedder,
+    )

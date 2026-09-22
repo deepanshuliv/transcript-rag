@@ -5,11 +5,14 @@ from __future__ import annotations
 import pickle
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rank_bm25 import BM25Okapi
 
-from .schemas import TranscriptChunk
+from .schemas import EvidenceItem, TranscriptChunk
+
+if TYPE_CHECKING:
+    from .ingest import LocalIndex
 
 
 TOKEN_RE = re.compile(r"[\w]+", flags=re.UNICODE)
@@ -90,3 +93,21 @@ class BM25Index:
             (self.chunk_ids[index], float(scores[index]))
             for index in ranked_indices[:top_k]
         ]
+
+
+def bm25_search(
+    query: str,
+    top_k: int,
+    *,
+    index: "LocalIndex",
+) -> list[EvidenceItem]:
+    """Search the persisted BM25 index and restore canonical chunk metadata."""
+
+    results: list[EvidenceItem] = []
+    for evidence_id, score in index.bm25.search(query, top_k):
+        chunk = index.get_chunk(evidence_id)
+        if chunk is not None:
+            results.append(
+                EvidenceItem.from_chunk(chunk, retrieval_score=score)
+            )
+    return results

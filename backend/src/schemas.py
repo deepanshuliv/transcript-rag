@@ -71,6 +71,27 @@ class EvidenceItem(BaseModel):
     retrieval_score: float | None = None
     rerank_score: float | None = None
 
+    @classmethod
+    def from_chunk(
+        cls,
+        chunk: TranscriptChunk,
+        *,
+        retrieval_score: float | None = None,
+        rerank_score: float | None = None,
+    ) -> "EvidenceItem":
+        """Create retrieval evidence while retaining citation metadata."""
+
+        return cls(
+            evidence_id=chunk.chunk_id,
+            text=chunk.retrieval_text,
+            country=chunk.country,
+            expert=chunk.expert,
+            source_file=chunk.source_file,
+            timestamp=chunk.answer_timestamp,
+            retrieval_score=retrieval_score,
+            rerank_score=rerank_score,
+        )
+
 
 class EvidenceBundle(BaseModel):
     """Evidence bundle contract reserved for later answer phases."""

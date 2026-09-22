@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import chromadb
 
 from .config import DEFAULT_COLLECTION_NAME
-from .schemas import TranscriptChunk
+from .schemas import EvidenceItem, TranscriptChunk
+
+if TYPE_CHECKING:
+    from .ingest import LocalIndex
 
 
 def metadata_for_chunk(chunk: TranscriptChunk) -> dict[str, Any]:
@@ -94,8 +97,51 @@ class ChromaVectorStore:
             "embedding": result["embeddings"][0],
         }
 
+    def search(
+        self,
+        query_embedding: list[float],
+        top_k: int,
+    ) -> list[tuple[str, float]]:
+        """Return Chroma-ranked evidence IDs and cosine-similarity scores."""
+
+        if top_k <= 0 or self.count == 0:
+            return []
+        result = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(top_k, self.count),
+            include=["distances"],
+        )
+        ids = result.get("ids", [[]])[0]
+        distances = result.get("distances", [[]])[0]
+        return [
+            (evidence_id, 1.0 - float(distance))
+            for evidence_id, distance in zip(ids, distances, strict=True)
+        ]
+
     @property
     def count(self) -> int:
         """Return the number of persisted vector records."""
 
         return self.collection.count()
+
+
+def dense_search(
+    query: str,
+    top_k: int,
+    *,
+    index: "LocalIndex",
+) -> list[EvidenceItem]:
+    """Embed a query locally and retrieve the nearest Chroma chunks."""
+
+    if top_k <= 0:
+        return []
+    query_embedding = index.embedder.embed([query])[0]
+    ranked = index.vector_store.search(query_embedding, top_k)
+    results: list[EvidenceItem] = []
+    for evidence_id, score in ranked:
+        chunk = index.get_chunk(evidence_id)
+        if chunk is not None:
+            results.append(
+                EvidenceItem.from_chunk(chunk, retrieval_score=score)
+            )
+    return results
