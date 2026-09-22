@@ -79,14 +79,27 @@ class BM25Index:
             raise ValueError("Persisted BM25 tokenization does not match the documents")
         return index
 
-    def search(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        *,
+        allowed_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
         """Return stable ``(chunk_id, score)`` pairs for a lexical query."""
 
         if top_k <= 0:
             return []
         scores = self._bm25.get_scores(tokenize(query))
+        candidate_indices = range(len(self.chunk_ids))
+        if allowed_ids is not None:
+            candidate_indices = (
+                index
+                for index, chunk_id in enumerate(self.chunk_ids)
+                if chunk_id in allowed_ids
+            )
         ranked_indices = sorted(
-            range(len(self.chunk_ids)),
+            candidate_indices,
             key=lambda index: (-float(scores[index]), index),
         )
         return [
@@ -100,11 +113,25 @@ def bm25_search(
     top_k: int,
     *,
     index: "LocalIndex",
+    countries: list[str] | None = None,
+    experts: list[str] | None = None,
 ) -> list[EvidenceItem]:
     """Search the persisted BM25 index and restore canonical chunk metadata."""
 
     results: list[EvidenceItem] = []
-    for evidence_id, score in index.bm25.search(query, top_k):
+    allowed_ids = None
+    if countries or experts:
+        allowed_ids = {
+            chunk.chunk_id
+            for chunk in index.chunks
+            if (not countries or chunk.country in countries)
+            and (not experts or chunk.expert in experts)
+        }
+    for evidence_id, score in index.bm25.search(
+        query,
+        top_k,
+        allowed_ids=allowed_ids,
+    ):
         chunk = index.get_chunk(evidence_id)
         if chunk is not None:
             results.append(

@@ -26,10 +26,11 @@ class Settings(BaseModel):
 
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    query_model: str = "deepseek/deepseek-v4-flash"
-    answer_model: str = "deepseek/deepseek-v4-flash"
+    query_model: str = "openai/gpt-4.1-nano"
+    answer_model: str = "openai/gpt-5-nano"
     rerank_model: str = "cohere/rerank-v3.5:free"
-    embedding_model: str = "BAAI/bge-m3"
+    embedding_provider: str = "openrouter"
+    embedding_model: str = "baai/bge-m3"
     embedding_dimension: int = Field(default=1024, ge=1)
 
     @classmethod
@@ -43,12 +44,13 @@ class Settings(BaseModel):
             openrouter_base_url=os.getenv(
                 "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
             ),
-            query_model=os.getenv("QUERY_MODEL", "deepseek/deepseek-v4-flash"),
-            answer_model=os.getenv("ANSWER_MODEL", "deepseek/deepseek-v4-flash"),
+            query_model=os.getenv("QUERY_MODEL", "openai/gpt-4.1-nano"),
+            answer_model=os.getenv("ANSWER_MODEL", "openai/gpt-5-nano"),
             rerank_model=os.getenv(
                 "RERANK_MODEL", "cohere/rerank-v3.5:free"
             ),
-            embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+            embedding_provider=os.getenv("EMBEDDING_PROVIDER", "openrouter"),
+            embedding_model=os.getenv("EMBEDDING_MODEL", "baai/bge-m3"),
             embedding_dimension=int(dimension),
         )
 

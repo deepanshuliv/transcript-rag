@@ -15,7 +15,7 @@ from .config import (
     PARSED_DIR,
     settings,
 )
-from .embeddings import EmbeddingModel, SentenceTransformerEmbedder
+from .embeddings import EmbeddingModel, create_embedder
 from .lexical_search import BM25Index
 from .parser import parse_transcripts
 from .schemas import IndexManifest, TranscriptChunk
@@ -118,7 +118,7 @@ class LocalIndex:
             raise ValueError("At least one transcript path is required")
 
         chunks = parse_transcripts(paths)
-        embedding_model = embedder or SentenceTransformerEmbedder()
+        embedding_model = embedder or create_embedder()
         embeddings = embedding_model.embed(
             [chunk.retrieval_text for chunk in chunks]
         )
@@ -145,6 +145,7 @@ class LocalIndex:
             chunk.source_file: chunk.source_hash for chunk in persisted_chunks
         }
         manifest = IndexManifest(
+            embedding_provider=getattr(embedding_model, "provider", "local"),
             embedding_model=embedding_model.model_name,
             embedding_dimension=embedding_model.dimension,
             chroma_collection=collection_name,
@@ -212,10 +213,16 @@ class LocalIndex:
         if vector_store.count != manifest.chunk_count:
             raise ValueError("Chroma count does not match the index manifest")
 
-        embedding_model = embedder or SentenceTransformerEmbedder(
-            model_name=manifest.embedding_model,
-            dimension=manifest.embedding_dimension,
-        )
+        if embedder is not None:
+            embedding_model = embedder
+        else:
+            embedding_model = create_embedder(
+                provider=manifest.embedding_provider,
+                model_name=manifest.embedding_model,
+                dimension=manifest.embedding_dimension,
+            )
+        if getattr(embedding_model, "provider", "local") != manifest.embedding_provider:
+            raise ValueError("Embedding provider does not match the index manifest")
         if embedding_model.model_name != manifest.embedding_model:
             raise ValueError("Embedding model does not match the index manifest")
         if embedding_model.dimension != manifest.embedding_dimension:
