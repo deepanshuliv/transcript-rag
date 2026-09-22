@@ -1,7 +1,7 @@
 """Application configuration for the local backend.
 
-Phase 0 defines the environment contract. Network clients and model loading are
-intentionally deferred to the later implementation phases.
+Phase 0 defines the environment contract. Model loading remains lazy, while
+OpenRouter clients are created only when a query-planning call is requested.
 """
 
 from __future__ import annotations
