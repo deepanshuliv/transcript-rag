@@ -105,6 +105,8 @@ class EvidenceBundle(BaseModel):
 class AnswerClaim(BaseModel):
     """Answer-claim contract reserved for later validation phases."""
 
+    model_config = ConfigDict(extra="forbid")
+
     claim: str
     evidence_ids: list[str]
 
@@ -112,8 +114,47 @@ class AnswerClaim(BaseModel):
 class LLMAnswer(BaseModel):
     """Strict model-answer contract reserved for later answer phases."""
 
+    model_config = ConfigDict(extra="forbid")
+
     answer: str
     claims: list[AnswerClaim]
+    abstain: bool
+    abstain_reason: str | None = None
+
+
+class Citation(BaseModel):
+    """Application-generated citation reconstructed from EvidenceBundle data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: str
+    quote: str
+    country: str
+    expert: str
+    source_file: str
+    timestamp: str
+
+
+class VerifiedClaim(BaseModel):
+    """A validated answer claim and its application-generated citations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: str
+    evidence_ids: list[str]
+    citations: list[Citation]
+    disagreement: bool = False
+
+
+class VerifiedAnswer(BaseModel):
+    """Final Phase 7 answer contract returned by the answer orchestrator."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    answer: str
+    claims: list[VerifiedClaim]
+    citations: list[Citation]
     abstain: bool
     abstain_reason: str | None = None
 

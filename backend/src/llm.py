@@ -57,11 +57,12 @@ class OpenRouterClient:
         *,
         json_schema: dict[str, Any],
         schema_name: str,
+        model: str | None = None,
     ) -> str:
         """Request one JSON object using OpenAI-compatible structured output."""
 
         response = self._client.chat.completions.create(
-            model=self.model,
+            model=model or self.model,
             messages=list(messages),
             temperature=0,
             response_format={
