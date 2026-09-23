@@ -12,6 +12,7 @@ from src.llm import OpenRouterClient
 from src.query_planner import (
     QUERY_PLANNER_SYSTEM_PROMPT,
     build_query_plan,
+    query_plan_response_schema,
 )
 from src.schemas import QueryPlan
 
@@ -51,6 +52,21 @@ class FakeCompletions:
         return self.response
 
 
+class FakeStreamingCompletions:
+    def __init__(self, fragments: list[str]) -> None:
+        self.fragments = fragments
+        self.kwargs: dict[str, object] | None = None
+
+    def create(self, **kwargs: object) -> object:
+        self.kwargs = kwargs
+        return iter(
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=fragment))]
+            )
+            for fragment in self.fragments
+        )
+
+
 def test_openrouter_client_sends_fixed_json_schema_request() -> None:
     completions = FakeCompletions(
         SimpleNamespace(
@@ -66,7 +82,7 @@ def test_openrouter_client_sends_fixed_json_schema_request() -> None:
     )
     client = OpenRouterClient(
         api_key="test-key",
-        model="deepseek/deepseek-v4-flash",
+        model="openai/gpt-4.1-nano",
         client=fake_openai,
     )
 
@@ -75,19 +91,76 @@ def test_openrouter_client_sends_fixed_json_schema_request() -> None:
             {"role": "system", "content": QUERY_PLANNER_SYSTEM_PROMPT},
             {"role": "user", "content": USER_QUERY},
         ],
-        json_schema=QueryPlan.model_json_schema(),
+        json_schema=query_plan_response_schema(),
         schema_name="query_plan",
     )
 
     assert json.loads(raw_json) == valid_payload()
     assert completions.kwargs is not None
-    assert completions.kwargs["model"] == "deepseek/deepseek-v4-flash"
+    assert completions.kwargs["model"] == "openai/gpt-4.1-nano"
     assert completions.kwargs["temperature"] == 0
     response_format = completions.kwargs["response_format"]
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["name"] == "query_plan"
     assert response_format["json_schema"]["strict"] is True
-    assert response_format["json_schema"]["schema"] == QueryPlan.model_json_schema()
+    schema = response_format["json_schema"]["schema"]
+    assert schema["required"] == list(schema["properties"])
+    assert "countries" in schema["required"]
+    assert "experts" in schema["required"]
+    assert "requires_all_countries" in schema["required"]
+    assert "minLength" not in json.dumps(schema)
+    assert "minItems" not in json.dumps(schema)
+
+
+def test_openrouter_client_forwards_minimal_reasoning_to_provider() -> None:
+    completions = FakeCompletions(
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(valid_payload()))
+                )
+            ]
+        )
+    )
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="openai/gpt-5-nano",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+
+    client.complete_json(
+        [{"role": "user", "content": USER_QUERY}],
+        json_schema=query_plan_response_schema(),
+        schema_name="latency_test",
+        reasoning_effort="minimal",
+    )
+
+    assert completions.kwargs is not None
+    assert completions.kwargs["extra_body"] == {
+        "reasoning": {"effort": "minimal"}
+    }
+
+
+def test_openrouter_client_streams_provider_content_deltas() -> None:
+    completions = FakeStreamingCompletions(['{"answer":', '"streamed"}'])
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="openai/gpt-5-nano",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+    received: list[str] = []
+
+    content = client.complete_json(
+        [{"role": "user", "content": USER_QUERY}],
+        json_schema=query_plan_response_schema(),
+        schema_name="stream_test",
+        on_content_delta=received.append,
+    )
+
+    assert completions.kwargs is not None
+    assert completions.kwargs["stream"] is True
+    assert content == '{"answer":"streamed"}'
+    assert received == ['{"answer":', '"streamed"}']
 
 
 def test_valid_plan_has_exactly_the_fixed_seven_fields() -> None:

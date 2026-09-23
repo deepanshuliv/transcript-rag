@@ -8,7 +8,7 @@ from uuid import uuid4
 from .schemas import EvidenceBundle, EvidenceItem, QueryPlan
 
 
-DEFAULT_MAX_EVIDENCE_ITEMS = 8
+DEFAULT_MAX_EVIDENCE_ITEMS = 7
 DEFAULT_RELEVANCE_THRESHOLD = 0.0
 
 
@@ -94,7 +94,6 @@ def select_evidence(
     if max_items <= 0:
         return []
     unique = _unique_in_order(candidates)
-    selected = unique[:max_items]
 
     # Preserve country coverage for comparison plans whenever the candidate
     # pool contains a suitable item and the size limit allows it.
@@ -104,21 +103,31 @@ def select_evidence(
     elif query_plan is not None and query_plan.intent == "comparison":
         required_countries = {item.country.casefold() for item in unique}
 
-    for country in required_countries:
-        if any(item.country.casefold() == country for item in selected):
-            continue
-        replacement = next(
-            (item for item in unique if item.country.casefold() == country),
-            None,
-        )
-        if replacement is None:
-            continue
-        if len(selected) < max_items:
-            selected.append(replacement)
-        else:
-            selected[-1] = replacement
+    if not required_countries:
+        return unique[:max_items]
 
-    return _unique_in_order(selected)
+    # Allocate evidence evenly by country before filling remaining slots by
+    # rank. This prevents a large or unusually similar market from dominating.
+    country_order = (
+        [country.casefold() for country in query_plan.countries]
+        if query_plan is not None and query_plan.requires_all_countries
+        else list(dict.fromkeys(item.country.casefold() for item in unique))
+    )
+    country_order = [country for country in country_order if country in required_countries]
+    buckets = {
+        country: [item for item in unique if item.country.casefold() == country]
+        for country in country_order
+    }
+    base_quota, extra_quota = divmod(max_items, max(1, len(country_order)))
+    selected: list[EvidenceItem] = []
+    for index, country in enumerate(country_order):
+        quota = base_quota + (1 if index < extra_quota else 0)
+        selected.extend(buckets[country][:quota])
+    selected_ids = {item.evidence_id for item in selected}
+    selected.extend(
+        item for item in unique if item.evidence_id not in selected_ids
+    )
+    return selected[:max_items]
 
 
 def create_evidence_bundle(

@@ -1,9 +1,10 @@
-"""OpenRouter-compatible chat client used by the Phase 3 query planner."""
+"""OpenRouter-compatible chat client used by structured LLM requests."""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 
@@ -16,6 +17,41 @@ class OpenRouterConfigurationError(RuntimeError):
 
 class OpenRouterResponseError(RuntimeError):
     """Raised when OpenRouter returns no usable message content."""
+
+
+_UNSUPPORTED_STRICT_SCHEMA_KEYS = {
+    "default",
+    "description",
+    "maxItems",
+    "maxLength",
+    "minItems",
+    "minLength",
+    "title",
+}
+
+
+def strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a Pydantic schema for strict OpenAI-compatible output modes."""
+
+    normalized = deepcopy(schema)
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key in list(value):
+                if key in _UNSUPPORTED_STRICT_SCHEMA_KEYS:
+                    del value[key]
+                else:
+                    visit(value[key])
+            properties = value.get("properties")
+            if value.get("type") == "object" and isinstance(properties, dict):
+                value["required"] = list(properties)
+                value["additionalProperties"] = False
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(normalized)
+    return normalized
 
 
 class OpenRouterClient:
@@ -58,9 +94,16 @@ class OpenRouterClient:
         json_schema: dict[str, Any],
         schema_name: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        on_content_delta: Callable[[str], None] | None = None,
     ) -> str:
         """Request one JSON object using OpenAI-compatible structured output."""
 
+        request_options: dict[str, Any] = {}
+        if reasoning_effort is not None:
+            request_options["extra_body"] = {
+                "reasoning": {"effort": reasoning_effort}
+            }
         response = self._client.chat.completions.create(
             model=model or self.model,
             messages=list(messages),
@@ -73,13 +116,27 @@ class OpenRouterClient:
                     "schema": json_schema,
                 },
             },
+            stream=on_content_delta is not None,
+            **request_options,
         )
-        try:
-            content = response.choices[0].message.content
-        except (AttributeError, IndexError, TypeError) as exc:
-            raise OpenRouterResponseError(
-                "OpenRouter response did not contain a chat message"
-            ) from exc
+        if on_content_delta is not None:
+            content_parts: list[str] = []
+            for event in response:
+                try:
+                    content = event.choices[0].delta.content
+                except (AttributeError, IndexError, TypeError):
+                    continue
+                if isinstance(content, str) and content:
+                    content_parts.append(content)
+                    on_content_delta(content)
+            content = "".join(content_parts)
+        else:
+            try:
+                content = response.choices[0].message.content
+            except (AttributeError, IndexError, TypeError) as exc:
+                raise OpenRouterResponseError(
+                    "OpenRouter response did not contain a chat message"
+                ) from exc
         if not isinstance(content, str) or not content.strip():
             raise OpenRouterResponseError(
                 "OpenRouter response contained empty message content"

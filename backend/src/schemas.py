@@ -122,6 +122,35 @@ class LLMAnswer(BaseModel):
     abstain_reason: str | None = None
 
 
+GuideQuestionId = Literal[
+    "adoption",
+    "barriers",
+    "economics",
+    "training_outcomes",
+    "outlook",
+    "timeline",
+]
+
+
+class LLMGuideItem(BaseModel):
+    """One answer in the structured six-question expert guide response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: GuideQuestionId
+    claims: list[AnswerClaim] = Field(default_factory=list)
+    abstain: bool = False
+    abstain_reason: str | None = None
+
+
+class LLMGuideAnswer(BaseModel):
+    """One model response containing answers to all guide questions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answers: list[LLMGuideItem] = Field(min_length=6, max_length=6)
+
+
 class Citation(BaseModel):
     """Application-generated citation reconstructed from EvidenceBundle data."""
 
@@ -159,10 +188,29 @@ class VerifiedAnswer(BaseModel):
     abstain_reason: str | None = None
 
 
+class GuideQuestionResult(BaseModel):
+    question_id: GuideQuestionId
+    question: str
+    result: VerifiedAnswer
+
+
+class ExpertGuideResult(BaseModel):
+    country: str
+    expert: str
+    source_file: str
+    answers: list[GuideQuestionResult]
+
+
+class GuideResponse(BaseModel):
+    countries: list[str]
+    experts: list[ExpertGuideResult]
+
+
 class IndexManifest(BaseModel):
     """Manifest tying all Phase 2 persistence artifacts to one index build."""
 
     schema_version: int = 1
+    embedding_provider: str = "local"
     embedding_model: str
     embedding_dimension: int = Field(ge=1)
     chroma_collection: str

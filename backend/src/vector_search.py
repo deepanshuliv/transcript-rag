@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -101,15 +102,39 @@ class ChromaVectorStore:
         self,
         query_embedding: list[float],
         top_k: int,
+        *,
+        countries: list[str] | None = None,
+        experts: list[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Return Chroma-ranked evidence IDs and cosine-similarity scores."""
 
         if top_k <= 0 or self.count == 0:
             return []
+        filters: list[dict[str, Any]] = []
+        if countries:
+            filters.append({"country": {"$in": countries}})
+        if experts:
+            filters.append({"expert": {"$in": experts}})
+        where = None
+        if len(filters) == 1:
+            where = filters[0]
+        elif filters:
+            where = {"$and": filters}
+
+        available = self.count
+        if countries or experts:
+            available = len(self.collection.get(where=where, include=["metadatas"])["ids"])
+        if available == 0:
+            return []
+        query_options = {
+            "query_embeddings": [query_embedding],
+            "n_results": min(top_k, available),
+            "include": ["distances"],
+        }
+        if where is not None:
+            query_options["where"] = where
         result = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(top_k, self.count),
-            include=["distances"],
+            **query_options,
         )
         ids = result.get("ids", [[]])[0]
         distances = result.get("distances", [[]])[0]
@@ -130,18 +155,82 @@ def dense_search(
     top_k: int,
     *,
     index: "LocalIndex",
+    countries: list[str] | None = None,
+    experts: list[str] | None = None,
 ) -> list[EvidenceItem]:
-    """Embed a query locally and retrieve the nearest Chroma chunks."""
+    """Embed one query and retrieve the nearest Chroma chunks."""
 
-    if top_k <= 0:
+    return dense_search_many(
+        [query],
+        top_k,
+        index=index,
+        countries=countries,
+        experts=experts,
+    )[0]
+
+
+def dense_search_many(
+    queries: Sequence[str],
+    top_k: int,
+    *,
+    index: "LocalIndex",
+    countries: list[str] | None = None,
+    experts: list[str] | None = None,
+) -> list[list[EvidenceItem]]:
+    """Embed all planned queries in one request, then search each vector."""
+
+    if not queries:
         return []
-    query_embedding = index.embedder.embed([query])[0]
-    ranked = index.vector_store.search(query_embedding, top_k)
-    results: list[EvidenceItem] = []
-    for evidence_id, score in ranked:
-        chunk = index.get_chunk(evidence_id)
-        if chunk is not None:
-            results.append(
-                EvidenceItem.from_chunk(chunk, retrieval_score=score)
+    if top_k <= 0:
+        return [[] for _query in queries]
+
+    query_embeddings = index.embedder.embed(queries)
+    results_by_query: list[list[EvidenceItem]] = []
+    for query_embedding in query_embeddings:
+        ranked = index.vector_store.search(
+            query_embedding,
+            top_k,
+            countries=countries,
+            experts=experts,
+        )
+        results: list[EvidenceItem] = []
+        for evidence_id, score in ranked:
+            chunk = index.get_chunk(evidence_id)
+            if chunk is not None:
+                results.append(EvidenceItem.from_chunk(chunk, retrieval_score=score))
+        results_by_query.append(results)
+    return results_by_query
+
+
+def dense_search_many_by_country(
+    queries: Sequence[str],
+    top_k: int,
+    *,
+    index: "LocalIndex",
+    countries: Sequence[str],
+    experts: list[str] | None = None,
+) -> dict[str, list[list[EvidenceItem]]]:
+    """Retrieve each query independently inside each requested country."""
+
+    if not queries or top_k <= 0:
+        return {country: [[] for _query in queries] for country in countries}
+    query_embeddings = index.embedder.embed(queries)
+    grouped: dict[str, list[list[EvidenceItem]]] = {}
+    for country in countries:
+        country_results: list[list[EvidenceItem]] = []
+        for query_embedding in query_embeddings:
+            ranked = index.vector_store.search(
+                query_embedding,
+                top_k,
+                countries=[country],
+                experts=experts,
             )
-    return results
+            country_results.append(
+                [
+                    EvidenceItem.from_chunk(chunk, retrieval_score=score)
+                    for evidence_id, score in ranked
+                    if (chunk := index.get_chunk(evidence_id)) is not None
+                ]
+            )
+        grouped[country] = country_results
+    return grouped

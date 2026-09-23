@@ -11,7 +11,9 @@ from src.fusion import reciprocal_rank_fusion
 from src.ingest import build_index
 from src.lexical_search import bm25_search
 from src.reranker import NoOpReranker, OpenRouterCohereReranker
-from src.schemas import EvidenceItem
+from src.evidence import select_evidence
+from src.schemas import EvidenceItem, QueryPlan
+from src.scope import resolve_country_scope
 from src.vector_search import dense_search
 
 
@@ -80,6 +82,50 @@ def test_rrf_deduplicates_and_rewards_cross_retriever_agreement() -> None:
     assert [item.evidence_id for item in fused] == ["a", "c", "b", "d"]
     assert len({item.evidence_id for item in fused}) == 4
     assert fused[0].retrieval_score > fused[2].retrieval_score
+
+
+def test_evidence_selection_balances_all_markets_and_is_order_stable() -> None:
+    markets = ["France", "Germany", "United Kingdom"]
+    candidates = [
+        evidence(f"{country.casefold().replace(' ', '_')}_{number}").model_copy(
+            update={"country": country, "retrieval_score": 1.0 - number / 10}
+        )
+        for country in markets
+        for number in range(4)
+    ]
+    plan = QueryPlan(
+        original_query="Summarize adoption",
+        normalized_query="adoption",
+        search_queries=["adoption"],
+        countries=markets,
+        experts=[],
+        intent="summary",
+        requires_all_countries=True,
+    )
+
+    selected = select_evidence(candidates, query_plan=plan, max_items=7)
+    repeated = select_evidence(candidates, query_plan=plan, max_items=7)
+
+    assert [item.evidence_id for item in selected] == [item.evidence_id for item in repeated]
+    assert len(selected) == 7
+    assert {item.country for item in selected} == set(markets)
+    assert all(sum(item.country == country for item in selected) >= 2 for country in markets)
+
+
+def test_default_all_market_scope_overrides_single_country_planner_hint(
+    tmp_path: Path,
+) -> None:
+    index = build_index(TRANSCRIPTS, data_dir=tmp_path, embedder=FakeEmbedder())
+
+    countries = resolve_country_scope(
+        index,
+        requested=None,
+        query="Summarize adoption",
+        planned=["United Kingdom"],
+        require_all=True,
+    )
+
+    assert countries == ["France", "Germany", "United Kingdom"]
 
 
 class FakeHttpClient:

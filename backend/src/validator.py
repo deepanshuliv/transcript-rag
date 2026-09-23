@@ -55,15 +55,24 @@ def _tokens(text: str) -> set[str]:
     return {token for token in WORD_RE.findall(text.casefold()) if token not in STOPWORDS}
 
 
+def _source_quote(item: EvidenceItem) -> str:
+    """Return only the expert's verbatim answer from a stored Q&A chunk."""
+
+    marker = "\nAnswer:"
+    if marker in item.text:
+        return item.text.split(marker, 1)[1].strip()
+    if item.text.startswith("Answer:"):
+        return item.text[len("Answer:") :].strip()
+    return item.text.strip()
+
+
 def _support_text(items: Iterable[EvidenceItem]) -> str:
     return " ".join(
         " ".join(
             [
-                item.text,
+                _source_quote(item),
                 item.country,
                 item.expert,
-                item.source_file,
-                item.timestamp,
             ]
         )
         for item in items
@@ -141,12 +150,40 @@ def _citation(item: EvidenceItem) -> Citation:
 
     return Citation(
         evidence_id=item.evidence_id,
-        quote=item.text,
+        quote=_source_quote(item),
         country=item.country,
         expert=item.expert,
         source_file=item.source_file,
         timestamp=item.timestamp,
     )
+
+
+def _supporting_quote(claim: str, item: EvidenceItem) -> str:
+    """Choose the shortest verbatim answer passage with sufficient word overlap."""
+
+    answer = _source_quote(item)
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", answer)
+        if sentence.strip()
+    ]
+    claim_tokens = _tokens(claim)
+    if not claim_tokens or not sentences:
+        return answer
+
+    best_quote = answer
+    best_length = len(answer)
+    for start in range(len(sentences)):
+        quote_parts: list[str] = []
+        for end in range(start, len(sentences)):
+            quote_parts.append(sentences[end])
+            quote = " ".join(quote_parts)
+            overlap = len(claim_tokens & _tokens(quote)) / len(claim_tokens)
+            if overlap >= 0.5 and len(quote) < best_length:
+                best_quote = quote
+                best_length = len(quote)
+                break
+    return best_quote
 
 
 def _invalid(reason: str, answer: str = "") -> VerifiedAnswer:
@@ -163,6 +200,9 @@ def _invalid(reason: str, answer: str = "") -> VerifiedAnswer:
 def validate_answer(
     llm_answer: LLMAnswer,
     evidence_bundle: EvidenceBundle,
+    *,
+    required_countries: set[str] | None = None,
+    required_evidence_ids: set[str] | None = None,
 ) -> VerifiedAnswer:
     """Validate a model answer against only the current in-memory bundle."""
 
@@ -180,20 +220,17 @@ def validate_answer(
     if llm_answer.abstain:
         return VerifiedAnswer(
             valid=True,
-            answer=llm_answer.answer,
+            answer="",
             claims=[],
             citations=[],
             abstain=True,
             abstain_reason=llm_answer.abstain_reason or "The model abstained.",
         )
-    if not llm_answer.answer.strip():
-        return _invalid("The answer is empty.")
     if not llm_answer.claims:
         return _invalid("The answer contains no evidence-backed claims.")
 
     verified_claims: list[VerifiedClaim] = []
     all_citations: dict[str, Citation] = {}
-    all_cited_items: list[EvidenceItem] = []
     for claim in llm_answer.claims:
         if not claim.claim.strip():
             return _invalid("An answer claim is empty.", llm_answer.answer)
@@ -240,7 +277,12 @@ def validate_answer(
                 llm_answer.answer,
             )
 
-        citations = [_citation(item) for item in cited_items]
+        citations = [
+            _citation(item).model_copy(
+                update={"quote": _supporting_quote(claim.claim, item)}
+            )
+            for item in cited_items
+        ]
         verified_claims.append(
             VerifiedClaim(
                 claim=claim.claim,
@@ -249,29 +291,46 @@ def validate_answer(
                 disagreement=_detect_disagreement(cited_items),
             )
         )
-        all_cited_items.extend(cited_items)
         for citation in citations:
             all_citations[citation.evidence_id] = citation
 
-    if not _timestamps_supported(llm_answer.answer, all_cited_items):
-        return _invalid(
-            "Answer contains a timestamp not present in its cited evidence.",
-            llm_answer.answer,
-        )
-    unsupported_answer_quotes = _unsupported_quotes(
-        llm_answer.answer,
-        _support_text(all_cited_items),
-    )
-    if unsupported_answer_quotes:
-        return _invalid(
-            f"Answer contains a quote absent from evidence: {unsupported_answer_quotes[0]}",
-            llm_answer.answer,
-        )
+    if required_countries:
+        cited_countries = {
+            citation.country.casefold() for citation in all_citations.values()
+        }
+        missing_countries = {
+            country.casefold() for country in required_countries
+        } - cited_countries
+        if missing_countries:
+            return _invalid(
+                "Answer citations do not cover every required market: "
+                + ", ".join(sorted(missing_countries)),
+                llm_answer.answer,
+            )
 
+    if required_evidence_ids is not None:
+        missing_ids = [
+            evidence_id
+            for evidence_id in evidence_bundle.ordered_ids
+            if evidence_id in required_evidence_ids
+            and evidence_id not in all_citations
+        ]
+        if missing_ids:
+            return _invalid(
+                "The answer omitted required evidence citations: "
+                + ", ".join(missing_ids),
+                llm_answer.answer,
+            )
+
+    ordered_citations = [
+        all_citations[evidence_id]
+        for evidence_id in evidence_bundle.ordered_ids
+        if evidence_id in all_citations
+    ]
     return VerifiedAnswer(
         valid=True,
-        answer=llm_answer.answer,
+        answer="\n\n".join(claim.claim for claim in verified_claims),
         claims=verified_claims,
-        citations=list(all_citations.values()),
+        citations=ordered_citations,
         abstain=False,
     )

@@ -1,4 +1,4 @@
-"""DeepSeek query understanding with strict local Pydantic validation."""
+"""Structured query planning with strict local Pydantic validation."""
 
 from __future__ import annotations
 
@@ -7,20 +7,35 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from .llm import OpenRouterClient
+from .llm import OpenRouterClient, strict_json_schema
 from .schemas import QueryPlan
 
 
 QUERY_PLANNER_SYSTEM_PROMPT = """Return only one JSON object matching the QueryPlan schema.
 Do not add fields.
-Do not remove fields.
+Include every schema field, even when its value is an empty list or false.
 Do not return Markdown, explanations, or code fences.
 Keep original_query exactly equal to the user's query.
 Create one to five search_queries.
 Use intent only from the allowed enum values.
+Use the transcript market labels France, Germany, and United Kingdom in countries.
+Normalize UK, U.K., Britain, or England to United Kingdom.
+Set countries only when the user asks about a market or expert; a requested
+response language such as German, French, or English is not a market filter.
+When the user explicitly asks to compare all three markets or all experts, list
+all three countries and set requires_all_countries=true.
 """
 
 QUERY_PLAN_SCHEMA_NAME = "query_plan"
+def query_plan_response_schema() -> dict[str, Any]:
+    """Return a strict-provider schema while retaining local validation rules.
+
+    Structured-output providers require every property to be required. The
+    Pydantic model keeps defaults for local callers, so normalize only the
+    request schema and continue enforcing bounds with Pydantic afterwards.
+    """
+
+    return strict_json_schema(QueryPlan.model_json_schema())
 
 
 class QueryPlanClient(Protocol):
@@ -99,7 +114,7 @@ def build_query_plan(
     *,
     client: QueryPlanClient | None = None,
 ) -> QueryPlan:
-    """Build a validated DeepSeek query plan with one retry and safe fallback.
+    """Build a validated query plan with one retry and safe fallback.
 
     The original query is never replaced by model output. Retrieval callers
     receive only a Pydantic-validated plan, including the deterministic
@@ -110,7 +125,7 @@ def build_query_plan(
         raise ValueError("user_query must be a non-empty string")
 
     planner_client = client or OpenRouterClient()
-    schema = QueryPlan.model_json_schema()
+    schema = query_plan_response_schema()
     messages = [
         {"role": "system", "content": QUERY_PLANNER_SYSTEM_PROMPT},
         {"role": "user", "content": user_query},

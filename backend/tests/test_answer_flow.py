@@ -37,7 +37,12 @@ class FakeAnswerClient:
 
     def complete_json(self, messages: list[dict[str, str]], **kwargs: object) -> str:
         self.calls.append({"messages": messages, **kwargs})
-        return self.answers.pop(0)
+        answer = self.answers.pop(0)
+        on_content_delta = kwargs.get("on_content_delta")
+        if callable(on_content_delta):
+            for offset in range(0, len(answer), 11):
+                on_content_delta(answer[offset : offset + 11])
+        return answer
 
 
 def plan_for(*search_queries: str, intent: str = "fact_lookup") -> QueryPlan:
@@ -124,15 +129,25 @@ def test_generate_answer_sends_only_bundle_evidence_and_fixed_schema() -> None:
         ]
     )
 
+    streamed: list[str] = []
     draft = generate_answer(
         evidence_bundle.query,
         evidence_bundle,
         client=client,
+        on_delta=streamed.append,
     )
 
     assert draft.answer.startswith("Capital budget")
     assert client.calls[0]["schema_name"] == "llm_answer"
-    assert client.calls[0]["json_schema"] == LLMAnswer.model_json_schema()
+    assert client.calls[0]["reasoning_effort"] == "minimal"
+    assert "".join(streamed) == draft.answer
+    response_schema = client.calls[0]["json_schema"]
+    assert response_schema["required"] == list(response_schema["properties"])
+    assert "default" not in response_schema["properties"]["abstain_reason"]
+    assert response_schema["properties"]["abstain_reason"]["anyOf"] == [
+        {"type": "string"},
+        {"type": "null"},
+    ]
     assert ANSWER_SYSTEM_PROMPT in client.calls[0]["messages"][0]["content"]
     evidence_message = client.calls[0]["messages"][1]["content"]
     assert "france_01_20" in evidence_message
@@ -281,6 +296,8 @@ def test_answer_question_retries_invalid_draft_then_returns_verified_answer(
         reranker=NoOpReranker(),
         llm_client=client,
         request_id="request-1",
+        country_scope=["France"],
+        max_evidence_items=1,
     )
 
     assert verified.valid is True
